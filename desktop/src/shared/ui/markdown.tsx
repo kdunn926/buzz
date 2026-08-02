@@ -111,6 +111,7 @@ import { MarkdownTable } from "./markdown/MarkdownTable";
 import { MaskedLinkTooltip } from "./markdown/MaskedLinkTooltip";
 import { ProgressiveImage } from "./markdown/ProgressiveImage";
 import { MessageLinkPill } from "./markdown/MessageLinkPill";
+import { buildMentionNamesByPubkey } from "@/shared/lib/resolveMentionNames";
 import { renderCachedMarkdown } from "./markdown/nodeCache";
 import {
   MarkdownRuntimeContext,
@@ -1666,14 +1667,19 @@ function createMarkdownComponents(
     ),
     mention: function MarkdownMention({
       children,
+      pubkey: explicitPubkey,
     }: {
       children?: React.ReactNode;
+      // Set by remarkNostrMentions for NIP-27 inline references, whose pubkey
+      // comes from the decoded `nostr:` URI rather than a name lookup — so a
+      // chip resolves (and its popover works) even with no known display name.
+      pubkey?: string;
     }) {
       const { agentMentionPubkeysByName, mentionPubkeysByName } =
         useMarkdownRuntime();
       const mentionText = String(children ?? "");
       const mentionName = mentionText.replace(/^@/, "").trim().toLowerCase();
-      const pubkey = mentionPubkeysByName?.[mentionName];
+      const pubkey = explicitPubkey ?? mentionPubkeysByName?.[mentionName];
       const isAgentMention =
         pubkey !== undefined &&
         agentMentionPubkeysByName?.[mentionName] === pubkey;
@@ -1923,6 +1929,15 @@ function MarkdownInner({
 
   const resolvedLinkPreviews = useResolvedLinkPreviews(linkPreviews);
 
+  // NIP-27 inline `nostr:` mentions resolve their chip label from the
+  // referenced pubkey, so invert the already-resolved name data (see
+  // buildMentionNamesByPubkey). Derived at parse time — it must be part of the
+  // node-cache key, which renderCachedMarkdown handles.
+  const mentionNamesByPubkey = React.useMemo(
+    () => buildMentionNamesByPubkey(mentionNames, mentionPubkeysByName),
+    [mentionNames, mentionPubkeysByName],
+  );
+
   // When a config-nudge suppresses the prose (selectProseOrNudge returns
   // null), skip the parse entirely — it would be thrown away unrendered.
   const componentSet = getMarkdownComponents(interactive, mediaInset);
@@ -1934,6 +1949,7 @@ function MarkdownInner({
           content: processedContent,
           customEmoji,
           mentionNames,
+          mentionNamesByPubkey,
           searchQuery,
           variant: componentSet.variant,
         })

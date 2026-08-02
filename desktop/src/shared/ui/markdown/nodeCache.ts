@@ -11,6 +11,7 @@ import remarkCustomEmoji, {
   type CustomEmoji,
 } from "@/shared/lib/remarkCustomEmoji";
 import remarkMentions from "@/shared/lib/remarkMentions";
+import remarkNostrMentions from "@/shared/lib/remarkNostrMentions";
 import remarkSpoilers from "@/shared/lib/remarkSpoilers";
 
 import { messageLinkUrlTransform } from "./utils";
@@ -66,6 +67,8 @@ export type MarkdownParseInputs = {
   content: string;
   customEmoji?: CustomEmoji[];
   mentionNames?: string[];
+  /** Lowercase-hex pubkey → display name, for NIP-27 inline `nostr:` mentions. */
+  mentionNamesByPubkey?: Record<string, string>;
   searchQuery?: string;
   variant: string;
 };
@@ -99,6 +102,12 @@ function buildMarkdownElement(input: MarkdownParseInputs): React.ReactElement {
       remarkBreaks,
       remarkSpoilers,
       remarkMessageLinks,
+      // NIP-27 inline `nostr:` references first, so they become `mention`
+      // nodes before the `@KnownDisplayName` pass runs (both feed one chip).
+      [
+        remarkNostrMentions,
+        { mentionNamesByPubkey: input.mentionNamesByPubkey },
+      ],
       [remarkMentions, { mentionNames: input.mentionNames }],
       [remarkChannelLinks, { channelNames: input.channelNames }],
       [remarkCustomEmoji, { customEmoji: input.customEmoji }],
@@ -132,6 +141,13 @@ export function renderCachedMarkdown(
   const key =
     segment(input.variant) +
     listSegment(input.mentionNames) +
+    listSegment(
+      input.mentionNamesByPubkey
+        ? Object.entries(input.mentionNamesByPubkey)
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+            .map(([pubkey, name]) => segment(pubkey) + segment(name))
+        : undefined,
+    ) +
     listSegment(input.channelNames) +
     listSegment(
       input.customEmoji?.map(

@@ -1,6 +1,8 @@
 import { decode, npubEncode } from "nostr-tools/nip19";
 import { getPublicKey } from "nostr-tools/pure";
 
+import { truncatePubkey } from "./pubkey";
+
 /**
  * Convert a hex-encoded Nostr public key to its npub (bech32) representation.
  *
@@ -21,6 +23,37 @@ export function safeNpub(pubkey: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Decode a NIP-19 `nprofile1…` or `npub1…` token into a lowercase hex pubkey.
+ * Returns null for any other entity type (note/nevent/naddr) or malformed
+ * input. Used to resolve NIP-27 inline `nostr:` mention references embedded in
+ * message content by other clients (e.g. Amethyst).
+ */
+export function pubkeyFromNip19(token: string): string | null {
+  try {
+    const decoded = decode(token);
+    if (decoded.type === "npub") {
+      return decoded.data.toLowerCase();
+    }
+    if (decoded.type === "nprofile") {
+      return decoded.data.pubkey.toLowerCase();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A compact, human-recognizable label for a pubkey whose profile we can't
+ * resolve to a name (e.g. `npub1abc…wxyz`). Used as the fallback label for
+ * NIP-27 mention chips. Routes through the canonical `truncatePubkey` so this
+ * stays the ONE truncation form (see check-pubkey-truncation).
+ */
+export function truncateNpub(hexPubkey: string): string {
+  return truncatePubkey(safeNpub(hexPubkey) ?? hexPubkey);
 }
 
 const HEX_PUBKEY_REGEX = /^[0-9a-f]{64}$/;

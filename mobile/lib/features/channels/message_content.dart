@@ -8,6 +8,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:gpt_markdown/custom_widgets/markdown_config.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:nostr/nostr.dart' as nostr;
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -268,6 +269,13 @@ class MessageContent extends HookConsumerWidget {
             _buildMedia(context, imageUrl, imetaByUrl[imageUrl]),
         maxLines: maxLines,
         inlineComponents: [
+          // NIP-27 inline `nostr:` references first, so they become mention
+          // pills before the `@KnownDisplayName` pass (both feed one pill).
+          _NostrMentionMd(
+            mentionNames: resolvedMentionNames,
+            agentMentionPubkeys: resolvedAgentMentionPubkeys,
+            onMentionTap: onMentionTap,
+          ),
           _MentionMd(
             mentionNames: resolvedMentionNames,
             agentMentionPubkeys: resolvedAgentMentionPubkeys,
@@ -876,6 +884,69 @@ class _MentionPill extends StatelessWidget {
   }
 }
 
+/// Renders NIP-27 inline mention references (`nostr:nprofile1…` /
+/// `nostr:npub1…`) that other clients (e.g. Amethyst on Android) embed
+/// directly in the event content, rather than Buzz's `@KnownDisplayName`
+/// convention. Decodes the reference to a hex pubkey, resolves it to a display
+/// name via the same p-tag map `_MentionMd` uses (keyed by lowercase pubkey),
+/// and reuses the existing [_MentionPill] — falling back to a truncated npub
+/// label when the pubkey has no known profile.
+class _NostrMentionMd extends InlineMd {
+  final Map<String, String> mentionNames;
+  final Set<String> agentMentionPubkeys;
+  final void Function(String pubkey)? onMentionTap;
+
+  // Word-boundaried `nostr:` URI, limited to the mention entity types. Other
+  // types (note/nevent/naddr) are left to the link path.
+  late final RegExp _exp = RegExp(
+    r'\bnostr:(?:nprofile1|npub1)[0-9a-z]+',
+    caseSensitive: false,
+  );
+
+  _NostrMentionMd({
+    required this.mentionNames,
+    required this.agentMentionPubkeys,
+    this.onMentionTap,
+  });
+
+  @override
+  RegExp get exp => _exp;
+
+  @override
+  InlineSpan span(
+    BuildContext context,
+    String text,
+    final GptMarkdownConfig config,
+  ) {
+    final raw = exp.firstMatch(text.trim())?.group(0);
+    if (raw == null) {
+      return TextSpan(text: text, style: config.style);
+    }
+
+    final pubkey = _pubkeyFromNip19(raw.substring('nostr:'.length));
+    if (pubkey == null) {
+      // Undecodable / unsupported reference — render the raw token as text.
+      return TextSpan(text: text, style: config.style);
+    }
+
+    final displayName = mentionNames[pubkey];
+    final isAgent = agentMentionPubkeys.contains(pubkey);
+    final pill = _MentionPill(
+      label: displayName ?? _truncateNpub(pubkey),
+      isAgent: isAgent,
+      textStyle: config.style,
+    );
+
+    return WidgetSpan(
+      alignment: PlaceholderAlignment.baseline,
+      baseline: TextBaseline.alphabetic,
+      child: onMentionTap != null
+          ? GestureDetector(onTap: () => onMentionTap!(pubkey), child: pill)
+          : pill,
+    );
+  }
+}
+
 class _ChannelLinkMd extends InlineMd {
   final Map<String, String> channelNames;
   final void Function(String channelId)? onChannelTap;
@@ -974,6 +1045,35 @@ RegExp _buildPrefixPattern({
     caseSensitive: false,
     multiLine: true,
   );
+}
+
+/// Decode a NIP-19 `nprofile1\u2026`/`npub1\u2026` token to a lowercase hex pubkey, or
+/// null for any other entity type or malformed input.
+String? _pubkeyFromNip19(String token) {
+  try {
+    final decoded = nostr.Nip19.decodeAny(payload: token);
+    if (decoded.prefix == nostr.Nip19Prefix.npub ||
+        decoded.prefix == nostr.Nip19Prefix.nprofile) {
+      return decoded.data.toLowerCase();
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// A compact, recognizable label for a mentioned pubkey with no resolvable
+/// name \u2014 the first 8 and last 4 characters of its npub (e.g. `npub1abc\u2026wxyz`).
+String _truncateNpub(String hexPubkey) {
+  try {
+    final npub = nostr.Nip19.encode(
+      prefix: nostr.Nip19Prefix.npub,
+      data: hexPubkey,
+    );
+    return '${npub.substring(0, 8)}\u2026${npub.substring(npub.length - 4)}';
+  } catch (_) {
+    return hexPubkey.length > 12 ? hexPubkey.substring(0, 12) : hexPubkey;
+  }
 }
 
 String _markdownMentionName(String name) => name.replaceAll(' ', '\u00A0');

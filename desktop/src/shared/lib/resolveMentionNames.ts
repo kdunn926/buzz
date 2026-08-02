@@ -104,3 +104,36 @@ export function resolveMentionPubkeysByName(
 ): Record<string, string> | undefined {
   return resolveMentionProps(tags, profiles).mentionPubkeysByName;
 }
+
+/**
+ * Invert the resolved mention data into a `pubkey → display name` map (keys
+ * lowercase hex) for rendering NIP-27 inline `nostr:` references, whose chip
+ * label must be looked up *from* the referenced pubkey rather than matched
+ * text.
+ *
+ * Joins the two already-resolved outputs the markdown renderer receives:
+ * `mentionNames` carries the original-case aliases and `mentionPubkeysByName`
+ * maps each lowercased alias to its pubkey. Deriving from these avoids
+ * re-plumbing a new prop through every call site while preserving the display
+ * name's original casing (the `mentionPubkeysByName` keys are lowercased).
+ * The first alias per pubkey wins — `collectProfileAliases` emits the display
+ * name first, so the richest label is preferred.
+ */
+export function buildMentionNamesByPubkey(
+  mentionNames: readonly string[] | undefined,
+  mentionPubkeysByName: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!mentionNames || !mentionPubkeysByName) {
+    return undefined;
+  }
+
+  const namesByPubkey: Record<string, string> = {};
+  for (const name of mentionNames) {
+    const pubkey = mentionPubkeysByName[name.toLowerCase()];
+    if (pubkey && !(pubkey in namesByPubkey)) {
+      namesByPubkey[pubkey] = name;
+    }
+  }
+
+  return Object.keys(namesByPubkey).length > 0 ? namesByPubkey : undefined;
+}
