@@ -11,6 +11,7 @@ import 'channel_messages_provider.dart';
 class SendMessage {
   final SignedEventRelay _signedEventRelay;
   final Future<List<ChannelMember>> Function(String channelId) _fetchMembers;
+  final Future<String> Function(String channelId) _fetchChannelType;
   final Map<String, UserProfile> Function() _readUserCache;
   final void Function(String channelId, NostrEvent event) _addLocalMessage;
   final void Function(String channelId, String eventId) _completeLocalMessage;
@@ -20,6 +21,7 @@ class SendMessage {
     required SignedEventRelay signedEventRelay,
     required Future<List<ChannelMember>> Function(String channelId)
     fetchMembers,
+    required Future<String> Function(String channelId) fetchChannelType,
     required Map<String, UserProfile> Function() readUserCache,
     required void Function(String channelId, NostrEvent event) addLocalMessage,
     required void Function(String channelId, String eventId)
@@ -27,6 +29,7 @@ class SendMessage {
     required void Function(String channelId, String eventId) removeLocalMessage,
   }) : _signedEventRelay = signedEventRelay,
        _fetchMembers = fetchMembers,
+       _fetchChannelType = fetchChannelType,
        _readUserCache = readUserCache,
        _addLocalMessage = addLocalMessage,
        _completeLocalMessage = completeLocalMessage,
@@ -53,12 +56,31 @@ class SendMessage {
         mentionPubkeys ?? await _resolveMentions(content, channelId);
     final authorPubkey = _signedEventRelay.pubkey;
 
+    // DM auto-mention (parity with Buzz Desktop): agents running in
+    // `subscribe=Mentions` mode only respond to events that `p`-tag them, and
+    // buzz-acp does NOT waive that requirement for DM channels. Desktop adds the
+    // recipient's `p`-tag on DM sends, so DM'd agents reply; mobile historically
+    // omitted it, so a DM'd agent silently ignored every message. For DM
+    // channels, tag every other member so mention-gated agents (and desktop
+    // notification routing) see the message. Best-effort: any failure falls back
+    // to the prior behaviour (no auto `p`-tag) rather than blocking the send.
+    var dmRecipients = const <String>[];
+    try {
+      if (await _fetchChannelType(channelId) == 'dm') {
+        final members = await _fetchMembers(channelId);
+        dmRecipients = [for (final m in members) m.pubkey];
+      }
+    } catch (_) {
+      // Non-fatal — send without the auto `p`-tag.
+    }
+
     // Normalize mentions: lowercase, deduplicate, exclude self (matching
-    // the desktop's normalizeMentionPubkeys).
+    // the desktop's normalizeMentionPubkeys). DM recipients are merged in and
+    // deduped through the same path (self is excluded via [seenMentions]).
     final selfLower = authorPubkey?.toLowerCase();
     final seenMentions = <String>{?selfLower};
     final normalizedMentions = <String>[
-      for (final pk in resolvedMentions)
+      for (final pk in [...resolvedMentions, ...dmRecipients])
         if (seenMentions.add(pk.toLowerCase())) pk,
     ];
 
@@ -169,6 +191,9 @@ final sendMessageProvider = Provider<SendMessage>((ref) {
     ),
     fetchMembers: (channelId) =>
         ref.read(channelMembersProvider(channelId).future),
+    fetchChannelType: (channelId) => ref
+        .read(channelDetailsProvider(channelId).future)
+        .then((details) => details.channelType),
     readUserCache: () => ref.read(userCacheProvider),
     addLocalMessage: (channelId, event) => ref
         .read(channelMessagesProvider(channelId).notifier)
